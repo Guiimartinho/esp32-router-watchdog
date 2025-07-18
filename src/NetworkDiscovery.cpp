@@ -6,39 +6,50 @@
 static const char* TAG_ND = "NetworkDiscovery";
 
 // A função que cada tarefa "trabalhadora" irá executar
+// src/NetworkDiscovery.cpp
+
+// A função que cada tarefa "trabalhadora" irá executar
+// In src/NetworkDiscovery.cpp
+
 void pingTask(void *pvParameters) {
   PingTaskParams* params = (PingTaskParams*)pvParameters;
   NetworkDiscovery* scanner = params->scanner;
 
-  ESP_LOGI(TAG_ND, "Iniciando sub-scan para IPs de %d a %d", params->startIp, params->endIp);
+  ESP_LOGD(TAG_ND, "Iniciando sub-scan para IPs de %d a %d", params->startIp, params->endIp);
+
+  // --- CORREÇÃO DEFINITIVA PARA SILENCIAR O PING ---
+  // 1. Guarda o objeto Serial original
+  Stream* originalSerial = &Serial;
+  // 2. Redireciona a saída do Serial para o "buraco negro" (null)
+  Serial.setDebugOutput(false);
 
   for (int i = params->startIp; i <= params->endIp; i++) {
     IPAddress hostToPing = WiFi.gatewayIP();
     hostToPing[3] = i;
 
-    if (Ping.ping(hostToPing, 1)) {
-      ESP_LOGI(TAG_ND, "Dispositivo encontrado em: %s", hostToPing.toString().c_str());
-      
-      // Pega a trava do mutex para adicionar o dispositivo na lista de forma segura
+    // A biblioteca vai tentar imprimir via Serial.printf, mas a saída
+    // está desativada, então nada aparecerá no terminal.
+    if (Ping.ping(hostToPing, 2)) {
       if (xSemaphoreTake(scanner->listMutex, (TickType_t)100) == pdTRUE) {
         if (scanner->deviceCount < MAX_DEVICES) {
           scanner->devices[scanner->deviceCount].ip = hostToPing;
           scanner->devices[scanner->deviceCount].isOnline = true;
           scanner->deviceCount++;
         }
-        xSemaphoreGive(scanner->listMutex); // Libera a trava
+        xSemaphoreGive(scanner->listMutex);
       }
     }
   }
 
-  ESP_LOGI(TAG_ND, "Sub-scan finalizado para IPs de %d a %d", params->startIp, params->endIp);
+  // 3. Restaura o Serial para o seu comportamento normal
+  Serial.setDebugOutput(true);
   
-  // Avisa ao gerente que terminou o trabalho e se autodestrói
+  ESP_LOGD(TAG_ND, "Sub-scan finalizado para IPs de %d a %d", params->startIp, params->endIp);
+  
   scanner->activeScanTasks--;
   delete params;
   vTaskDelete(NULL);
 }
-
 
 NetworkDiscovery::NetworkDiscovery() {
   deviceCount = 0;
