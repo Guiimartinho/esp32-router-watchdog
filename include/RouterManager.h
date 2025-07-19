@@ -30,6 +30,8 @@ public:
   // NOVA FUNÇÃO para ligar o notificador ao manager
   void setNotificationManager(NotificationManager* nm);
 
+  void performIntelligentReboot();
+
 private:
   // --- Configurações ---
   int _relayPin;
@@ -47,7 +49,6 @@ private:
   SemaphoreHandle_t _stateMutex;
 
   // --- Métodos Internos ---
-  void performIntelligentReboot();
   bool _rebootViaTR064();
   void _rebootViaRelay();
 
