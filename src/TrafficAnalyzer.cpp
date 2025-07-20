@@ -126,6 +126,12 @@ void TrafficAnalyzer::setup() {
 }
 
 void TrafficAnalyzer::start() {
+  // VERIFICAÇÃO DE SEGURANÇA ADICIONADA AQUI
+  if (WiFi.status() != WL_CONNECTED) {
+    ESP_LOGE(TAG_TA, "Nao e possivel iniciar o modo promiscuo. Wi-Fi desconectado.");
+    return; // Sai da função para evitar o crash
+  }
+  
   if (_snifferTaskHandle != NULL) return;
 
   ESP_LOGI(TAG_TA, "Preparando para modo promíscuo...");

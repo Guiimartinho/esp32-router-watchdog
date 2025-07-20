@@ -82,7 +82,7 @@ void operationalTask(void *pvParameters)
   OperationalMode currentMode = MODE_MONITOR;
   unsigned long lastModeChange = millis();
 
-  const long monitorDuration = 14 * 60 * 1000; // 14 minutos
+  const long monitorDuration = 3 * 60 * 1000; // 14 minutos
   const long snifferDuration = 1 * 60 * 1000;  // 1 minuto
 
   unsigned long lastInternetCheck = 0;
@@ -132,15 +132,10 @@ void operationalTask(void *pvParameters)
         }
         routerManager.loop();
 
-        // Bloco de Descoberta de Rede
-        if (currentTime - lastDiscoveryScan >= discoveryScanInterval)
+        // SÓ INICIA UM NOVO SCAN SE NÃO HOUVER OUTRO EM ANDAMENTO
+        if (!networkDiscovery.isScanning() && (currentTime - lastDiscoveryScan >= discoveryScanInterval))
         {
           networkDiscovery.beginScan();
-          while (networkDiscovery.isScanning())
-          {
-            vTaskDelay(pdMS_TO_TICKS(500));
-          }
-          ESP_LOGI(TAG, "Scan de rede finalizado, %d dispositivos encontrados.", networkDiscovery.deviceCount);
           lastDiscoveryScan = currentTime;
         }
       }
@@ -218,8 +213,8 @@ void setup()
     ESP_LOGI(TAG, "Sistema em MODO DE OPERAÇÃO.");
 
     preferences.begin("s-monitor-cfg", true);
-    String ssid = preferences.getString("wifi_ssid");
-    String pass = preferences.getString("wifi_pass");
+    saved_ssid = preferences.getString("wifi_ssid");
+    saved_pass = preferences.getString("wifi_pass");
     String router_ip = preferences.getString("router_ip", ROUTER_IP);
     String router_user = preferences.getString("router_user", ROUTER_USER);
     String router_pass = preferences.getString("router_pass", ROUTER_PASS);
@@ -240,7 +235,7 @@ void setup()
     webServerManager.setup();
 
     WiFi.setAutoReconnect(true);
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str()); 
 
     int retryCount = 0;
     while (WiFi.status() != WL_CONNECTED && retryCount < 60)
@@ -281,15 +276,18 @@ void setup()
 
 void loop()
 {
-  if (systemState == STATE_PROVISIONING) {
+  if (systemState == STATE_PROVISIONING)
+  {
     // No modo de configuração, o loop apenas garante que o servidor DNS
     // do captive portal continue respondendo às requisições.
     webServerManager.loop();
     // O reboot agora é acionado por um temporizador interno do WebServerManager,
     // então não precisamos mais checar a flag aqui.
-  } else {
+  }
+  else
+  {
     // Em modo operacional, a tarefa principal (operationalTask) cuida de tudo.
     // Deletamos a tarefa do loop do Arduino para economizar recursos.
-    vTaskDelete(NULL); 
+    vTaskDelete(NULL);
   }
 }
