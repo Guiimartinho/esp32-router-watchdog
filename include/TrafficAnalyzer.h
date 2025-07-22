@@ -6,36 +6,30 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
-struct CapturedPacketInfo
-{
-  uint8_t mac_source[6];
+// MUDANÇA: A struct agora carrega o pacote bruto para análise na tarefa
+struct CapturedPacketInfo {
+  uint8_t payload[1500]; // Buffer para guardar o pacote
   int length;
-  String dns_query;
 };
 
-// Declaração da tarefa para que o .cpp a conheça
 void snifferTask(void *pvParameters);
 
-class TrafficAnalyzer
-{
+class TrafficAnalyzer {
 public:
   TrafficAnalyzer();
   void setup();
-  void start(); // Inicia o modo promiscuo E a tarefa
-  void stop();  // Para o modo promiscuo E a tarefa
+  void start();
+  void stop();
 
 private:
   QueueHandle_t _packetQueue;
-  TaskHandle_t _snifferTaskHandle; // <-- Handle para controlar nossa tarefa
+  TaskHandle_t _snifferTaskHandle;
+  volatile bool _stopSniffer;
 
-  // --- Variáveis para o "Modo Promíscuo Smart" ---
-  uint8_t _target_bssid[6]; // MAC do nosso roteador
-  uint8_t _target_channel;  // Canal do nosso Wi-Fi
+  uint8_t _target_bssid[6];
+  uint8_t _target_channel;
 
-  // O callback continua o mesmo
   static void snifferCallback(void *buf, wifi_promiscuous_pkt_type_t type);
-
-  // Permite que a snifferTask acesse os membros privados desta classe
   friend void snifferTask(void *pvParameters);
 };
 

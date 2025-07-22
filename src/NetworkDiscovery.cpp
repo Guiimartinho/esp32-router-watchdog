@@ -5,49 +5,8 @@
 
 static const char* TAG_ND = "NetworkDiscovery";
 
-// A função que cada tarefa "trabalhadora" irá executar
-// src/NetworkDiscovery.cpp
-
-// A função que cada tarefa "trabalhadora" irá executar
-// In src/NetworkDiscovery.cpp
-
+// A função pingTask não será mais usada, mas a deixamos aqui para não dar erro de compilação.
 void pingTask(void *pvParameters) {
-  PingTaskParams* params = (PingTaskParams*)pvParameters;
-  NetworkDiscovery* scanner = params->scanner;
-
-  ESP_LOGD(TAG_ND, "Iniciando sub-scan para IPs de %d a %d", params->startIp, params->endIp);
-
-  // --- CORREÇÃO DEFINITIVA PARA SILENCIAR O PING ---
-  // 1. Guarda o objeto Serial original
-  Stream* originalSerial = &Serial;
-  // 2. Redireciona a saída do Serial para o "buraco negro" (null)
-  Serial.setDebugOutput(false);
-
-  for (int i = params->startIp; i <= params->endIp; i++) {
-    IPAddress hostToPing = WiFi.gatewayIP();
-    hostToPing[3] = i;
-
-    // A biblioteca vai tentar imprimir via Serial.printf, mas a saída
-    // está desativada, então nada aparecerá no terminal.
-    if (Ping.ping(hostToPing, 2)) {
-      if (xSemaphoreTake(scanner->listMutex, (TickType_t)100) == pdTRUE) {
-        if (scanner->deviceCount < MAX_DEVICES) {
-          scanner->devices[scanner->deviceCount].ip = hostToPing;
-          scanner->devices[scanner->deviceCount].isOnline = true;
-          scanner->deviceCount++;
-        }
-        xSemaphoreGive(scanner->listMutex);
-      }
-    }
-  }
-
-  // 3. Restaura o Serial para o seu comportamento normal
-  Serial.setDebugOutput(true);
-  
-  ESP_LOGD(TAG_ND, "Sub-scan finalizado para IPs de %d a %d", params->startIp, params->endIp);
-  
-  scanner->activeScanTasks--;
-  delete params;
   vTaskDelete(NULL);
 }
 
@@ -55,52 +14,67 @@ NetworkDiscovery::NetworkDiscovery() {
   deviceCount = 0;
   activeScanTasks = 0;
   listMutex = NULL;
+  pingMutex = NULL;
 }
 
 void NetworkDiscovery::setup() {
   listMutex = xSemaphoreCreateMutex();
-  if (listMutex) {
-    ESP_LOGI(TAG_ND, "Módulo de Descoberta de Rede (Scanner Nativo) inicializado.");
+  pingMutex = xSemaphoreCreateMutex(); 
+  if (listMutex && pingMutex) {
+    ESP_LOGI(TAG_ND, "Módulo de Descoberta de Rede (MODO SEQUENCIAL).");
   } else {
     ESP_LOGE(TAG_ND, "Falha ao criar o Mutex do Scanner!");
   }
 }
 
+// Em modo sequencial, isScanning será controlado de outra forma ou pode ser removido
+// mas por enquanto, para evitar quebras, deixamos assim.
 bool NetworkDiscovery::isScanning() {
   return activeScanTasks > 0;
 }
 
+// ===================================================================
+// VERSÃO FINAL DA FUNÇÃO beginScan (SEQUENCIAL E BLOQUEANTE)
+// ===================================================================
 void NetworkDiscovery::beginScan() {
   if (isScanning()) {
-    ESP_LOGW(TAG_ND, "Scan já está em andamento.");
+    ESP_LOGW(TAG_ND, "Scan já em andamento.");
     return;
   }
+  
+  activeScanTasks = 1; // Sinaliza que o scan está ativo
 
-  ESP_LOGI(TAG_ND, "--- Iniciando Scan Paralelo da Rede Local ---");
+  ESP_LOGI(TAG_ND, "--- Iniciando Scan Sequencial da Rede Local ---");
   deviceCount = 0;
 
-  // Divide a rede em 4 partes para 4 tarefas
-  const int numTasks = 4;
-  activeScanTasks = numTasks;
+  // O loop agora acontece diretamente aqui, sem criar tarefas
+  for (int i = 1; i < 255; i++) {
+    IPAddress hostToPing = WiFi.gatewayIP();
+    hostToPing[3] = i;
 
-  for (int i = 0; i < numTasks; i++) {
-    // Cria os parâmetros para cada tarefa
-    PingTaskParams* params = new PingTaskParams();
-    params->startIp = (i * 64) + 1;
-    params->endIp = (i + 1) * 64;
-    params->scanner = this;
-
-    char taskName[20];
-    sprintf(taskName, "PingTask%d", i + 1);
-
-    // Cria e inicia a tarefa
-    xTaskCreate(
-      pingTask,
-      taskName,
-      4096, // Tamanho da pilha
-      (void*)params, // Passa os parâmetros
-      1, // Prioridade
-      NULL
-    );
+    // A chamada ao Ping é protegida pelo mutex, como boa prática
+    // para o caso do NetworkDiagnostics tentar usar ao mesmo tempo.
+    bool success = false;
+    if (xSemaphoreTake(pingMutex, portMAX_DELAY) == pdTRUE) {
+        success = Ping.ping(hostToPing, 1);
+        xSemaphoreGive(pingMutex);
+    }
+    
+    if (success) {
+      ESP_LOGI(TAG_ND, "Dispositivo encontrado em: %s", hostToPing.toString().c_str());
+      if (xSemaphoreTake(listMutex, (TickType_t)100) == pdTRUE) {
+        if (deviceCount < MAX_DEVICES) {
+          devices[deviceCount].ip = hostToPing;
+          devices[deviceCount].isOnline = true;
+          deviceCount++;
+        }
+        xSemaphoreGive(listMutex);
+      }
+    }
+    // Pequeno delay para a tarefa principal poder respirar e não bloquear o watchdog
+    vTaskDelay(pdMS_TO_TICKS(20)); 
   }
+
+  ESP_LOGI(TAG_ND, "--- Scan Sequencial Concluído ---");
+  activeScanTasks = 0; // Sinaliza que o scan terminou
 }

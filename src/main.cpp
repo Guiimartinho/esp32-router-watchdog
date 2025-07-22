@@ -25,7 +25,7 @@ enum SystemOverallState
 };
 SystemOverallState systemState;
 
-// Sub-estados do modo operacional, que serão controlados pela tarefa principal
+// Sub-estados do modo operacional
 enum OperationalMode
 {
   MODE_MONITOR,
@@ -33,13 +33,13 @@ enum OperationalMode
 };
 
 // --- Configurações e Instâncias de Módulos ---
-const int ROUTER_RELAY_PIN = 4;
+const int ROUTER_RELAY_PIN = 18;
 #define LED_PIN 48
 #define NUM_LEDS 1
 #define BOOT_BUTTON_PIN 0
-Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_RGB + NEO_KHZ800);
-#define COLOR_GREEN pixels.Color(0, 255, 0)
-#define COLOR_RED pixels.Color(255, 0, 0)
+Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+#define COLOR_GREEN pixels.Color(255, 0, 0)
+#define COLOR_RED pixels.Color(0, 255, 0)
 #define COLOR_PURPLE pixels.Color(128, 0, 128)
 
 String saved_ssid;
@@ -53,27 +53,39 @@ TrafficAnalyzer trafficAnalyzer;
 WebServerManager webServerManager;
 Preferences preferences;
 
-void setLedStatus(bool isOnline)
+// ===================================================================
+// --- MUDANÇA 1: NOVA LÓGICA DE CONTROLE DO LED ---
+// ===================================================================
+void updateLedColor(OperationalMode opMode = MODE_MONITOR, bool isOnline = false)
 {
-  if (systemState == STATE_OPERATIONAL)
+  if (systemState == STATE_PROVISIONING)
   {
-    if (isOnline)
-    {
-      pixels.setPixelColor(0, COLOR_GREEN);
-    }
-    else
-    {
-      pixels.setPixelColor(0, COLOR_RED);
-    }
+    pixels.setPixelColor(0, COLOR_PURPLE); // Roxo somente no provisionamento
   }
-  else
+  else // STATE_OPERATIONAL
   {
-    pixels.setPixelColor(0, COLOR_PURPLE);
+    if (opMode == MODE_SNIFFER)
+    {
+      pixels.setPixelColor(0, COLOR_RED); // Vermelho somente no modo sniffer
+    }
+    else // opMode == MODE_MONITOR
+    {
+      if (isOnline)
+      {
+        pixels.setPixelColor(0, COLOR_GREEN); // Verde se estiver online no modo monitor
+      }
+      else
+      {
+        pixels.setPixelColor(0, 0); // Apagado se estiver offline no modo monitor
+      }
+    }
   }
   pixels.show();
 }
 
-// --- TAREFA ÚNICA E UNIFICADA COM MÁQUINA DE ESTADOS DE MODO ---
+// ===================================================================
+// --- TAREFA OPERACIONAL REESTRUTURADA ---
+// ===================================================================
 void operationalTask(void *pvParameters)
 {
   ESP_LOGI(TAG, "Tarefa de Operação iniciada.");
@@ -82,69 +94,88 @@ void operationalTask(void *pvParameters)
   OperationalMode currentMode = MODE_MONITOR;
   unsigned long lastModeChange = millis();
 
-  const long monitorDuration = 3 * 60 * 1000; // 14 minutos
-  const long snifferDuration = 1 * 60 * 1000;  // 1 minuto
+  const long monitorDuration = 3 * 60 * 1000; // 3 minutos
+  const long snifferDuration = 1 * 60 * 1000;   // 1 minuto
 
   unsigned long lastInternetCheck = 0;
-  unsigned long lastDiscoveryScan = 0;
-  const long internetCheckInterval = 60 * 1000;
-  const long discoveryScanInterval = 5 * 60 * 1000;
+  unsigned long lastDiscoveryScan = millis();
+
+  const long internetCheckInterval = 60 * 1000;     // 1 minuto
+  const long discoveryScanInterval = 4 * 60 * 1000; // 5 minutos
 
   notificationManager.sendMessage("✅ *Super Monitor* iniciou operação normal.");
 
   for (;;)
   {
     unsigned long currentTime = millis();
+    bool isConnected = (WiFi.status() == WL_CONNECTED);
 
-    // --- LÓGICA DE ALTERNÂNCIA DE MODO ---
-    if (currentMode == MODE_MONITOR && (currentTime - lastModeChange >= monitorDuration))
-    {
-      ESP_LOGI(TAG, "MUDANDO PARA MODO SNIFFER.");
-      notificationManager.sendMessage("🔬 Entrando em modo de análise de tráfego por 1 minuto...");
-      trafficAnalyzer.start(); // Esta função liga o modo promíscuo e cria a snifferTask
-      currentMode = MODE_SNIFFER;
-      lastModeChange = currentTime;
-    }
-    else if (currentMode == MODE_SNIFFER && (currentTime - lastModeChange >= snifferDuration))
-    {
-      ESP_LOGI(TAG, "MUDANDO PARA MODO MONITOR.");
-      trafficAnalyzer.stop(); // Esta função desliga o modo promíscuo e deleta a snifferTask
-      notificationManager.sendMessage("📡 Voltando ao modo de monitoramento...");
-      ESP_LOGI(TAG, "Reconectando ao Wi-Fi...");
-
-      WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
-      currentMode = MODE_MONITOR;
-      lastModeChange = currentTime;
-    }
-
-    // --- LÓGICA DE EXECUÇÃO BASEADA NO MODO ATUAL ---
+    // --- LÓGICA DE EXECUÇÃO E TRANSIÇÃO DE MODO ---
     if (currentMode == MODE_MONITOR)
     {
-      if (WiFi.status() == WL_CONNECTED)
-      {
-        // Bloco de Diagnóstico da Internet
-        if (currentTime - lastInternetCheck >= internetCheckInterval)
+        // --- Bloco de ações do Modo Monitor ---
+        if (isConnected)
         {
-          bool internetOK = networkDiagnostics.isInternetConnected();
-          setLedStatus(internetOK);
-          routerManager.updateInternetStatus(internetOK);
-          lastInternetCheck = currentTime;
-        }
-        routerManager.loop();
+            // 1. Verifica a internet periodicamente
+            if (currentTime - lastInternetCheck >= internetCheckInterval)
+            {
+                bool internetOK = networkDiagnostics.isInternetConnected();
+                updateLedColor(MODE_MONITOR, internetOK); // --- MUDANÇA AQUI ---
+                routerManager.updateInternetStatus(internetOK);
+                lastInternetCheck = currentTime;
+            }
 
-        // SÓ INICIA UM NOVO SCAN SE NÃO HOUVER OUTRO EM ANDAMENTO
-        if (!networkDiscovery.isScanning() && (currentTime - lastDiscoveryScan >= discoveryScanInterval))
-        {
-          networkDiscovery.beginScan();
-          lastDiscoveryScan = currentTime;
+            // 2. Controla o roteador
+            routerManager.loop();
+
+            // 3. Roda o scan de descoberta periodicamente
+            if (!networkDiscovery.isScanning() && (currentTime - lastDiscoveryScan >= discoveryScanInterval))
+            {
+                networkDiscovery.beginScan();
+                lastDiscoveryScan = currentTime;
+            }
         }
-      }
-      else
-      {
-        ESP_LOGW(TAG, "Wi-Fi desconectado em modo Monitor.");
-        setLedStatus(false);
-        routerManager.updateInternetStatus(false);
-      }
+        else
+        {
+            ESP_LOGW(TAG, "Wi-Fi desconectado em modo Monitor. Tentando reconectar...");
+            updateLedColor(MODE_MONITOR, false); // --- MUDANÇA AQUI ---
+            routerManager.updateInternetStatus(false);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+
+        // 4. Verifica se é hora de mudar para o modo Sniffer
+        if (currentTime - lastModeChange >= monitorDuration)
+        {
+            ESP_LOGI(TAG, "MUDANDO PARA MODO SNIFFER.");
+            notificationManager.sendMessage("🔬 Entrando em modo de análise de tráfego por 1 minuto...");
+            trafficAnalyzer.start();
+            currentMode = MODE_SNIFFER;
+            lastModeChange = currentTime;
+            updateLedColor(MODE_SNIFFER, false); // --- MUDANÇA AQUI ---
+        }
+    }
+    else // currentMode == MODE_SNIFFER
+    {
+        // --- Bloco de ações do Modo Sniffer ---
+        // A tarefa snifferTask está rodando em background.
+        
+        // Verifica se é hora de voltar ao modo Monitor
+        if (currentTime - lastModeChange >= snifferDuration)
+        {
+            ESP_LOGI(TAG, "MUDANDO PARA MODO MONITOR.");
+            trafficAnalyzer.stop();
+            notificationManager.sendMessage("📡 Voltando ao modo de monitoramento...");
+            
+            ESP_LOGI(TAG, "Reconectando ao Wi-Fi...");
+            WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
+            
+            vTaskDelay(pdMS_TO_TICKS(10000)); // Espera para estabilizar
+            
+            currentMode = MODE_MONITOR;
+            lastModeChange = currentTime;
+            lastInternetCheck = 0; // Força uma checagem de internet imediata
+            updateLedColor(MODE_MONITOR, (WiFi.status() == WL_CONNECTED)); // --- MUDANÇA AQUI ---
+        }
     }
 
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -162,7 +193,7 @@ void setup()
   pixels.clear();
   pixels.show();
 
-  // --- LÓGICA DE DECISÃO DE MODO (CORRIGIDA) ---
+  // --- LÓGICA DE DECISÃO DE MODO ---
   bool forceProvisioning = false;
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
   delay(50);
@@ -197,14 +228,12 @@ void setup()
   {
     systemState = STATE_OPERATIONAL;
   }
-  // --- FIM DA LÓGICA DE DECISÃO ---
 
   // --- MÁQUINA DE ESTADOS DA INICIALIZAÇÃO ---
   if (systemState == STATE_PROVISIONING)
   {
     ESP_LOGI(TAG, "Sistema em MODO DE PROVISIONAMENTO.");
-    pixels.setPixelColor(0, COLOR_PURPLE);
-    pixels.show();
+    updateLedColor(); // --- MUDANÇA AQUI ---
     webServerManager.setup();
     webServerManager.startProvisioningServer();
   }
@@ -233,6 +262,7 @@ void setup()
     networkDiscovery.setup();
     trafficAnalyzer.setup();
     webServerManager.setup();
+    networkDiagnostics.setDiscoveryModule(&networkDiscovery);
 
     WiFi.setAutoReconnect(true);
     WiFi.begin(saved_ssid.c_str(), saved_pass.c_str()); 
@@ -250,10 +280,12 @@ void setup()
       Serial.println();
       ESP_LOGI(TAG, "Wi-Fi Conectado!");
 
+      // Atualiza o LED para verde, pois estamos online no modo monitor
+      updateLedColor(MODE_MONITOR, true); // --- MUDANÇA AQUI ---
+
       IPAddress primaryDNS(8, 8, 8, 8);
       IPAddress secondaryDNS(1, 1, 1, 1);
-
-      // 2. Convertemos para o formato ip_addr_t que a função dns_setserver espera
+      
       ip_addr_t primaryDnsAddr;
       ip_addr_t secondaryDnsAddr;
 
@@ -267,10 +299,11 @@ void setup()
     {
       Serial.println();
       ESP_LOGE(TAG, "Falha ao conectar com as credenciais salvas.");
+      updateLedColor(MODE_MONITOR, false); // --- MUDANÇA AQUI ---
     }
 
     ESP_LOGI(TAG, "Setup completo. Iniciando tarefa de operação.");
-    xTaskCreate(operationalTask, "Operational Task", 10000, NULL, 1, NULL);
+    xTaskCreate(operationalTask, "Operational Task", 16384, NULL, 1, NULL);
   }
 }
 
@@ -278,16 +311,10 @@ void loop()
 {
   if (systemState == STATE_PROVISIONING)
   {
-    // No modo de configuração, o loop apenas garante que o servidor DNS
-    // do captive portal continue respondendo às requisições.
     webServerManager.loop();
-    // O reboot agora é acionado por um temporizador interno do WebServerManager,
-    // então não precisamos mais checar a flag aqui.
   }
   else
   {
-    // Em modo operacional, a tarefa principal (operationalTask) cuida de tudo.
-    // Deletamos a tarefa do loop do Arduino para economizar recursos.
     vTaskDelete(NULL);
   }
 }
