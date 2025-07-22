@@ -1,85 +1,85 @@
 # ESP32 Router Watchdog & Network Monitor
 
-Este projeto transforma um ESP32-S3 em um hub inteligente para monitoramento, gerenciamento e garantia da conectividade da rede doméstica. Ele utiliza o sistema operacional de tempo real **FreeRTOS** para lidar com múltiplas tarefas de forma confiável e concorrente, incluindo análise de tráfego Wi-Fi e um dashboard web para controle.
+This project transforms an ESP32-S3 into an intelligent hub for monitoring, managing, and ensuring home network connectivity. It leverages the **FreeRTOS** real-time operating system to handle multiple tasks reliably and concurrently, including Wi-Fi traffic analysis and a web dashboard for control.
 
 ---
 
 ### Core Architectural Features
 
-* **Multi-Tasking RTOS:** Construído sobre FreeRTOS para lidar com diagnósticos de rede, descoberta de dispositivos, análise de tráfego e o servidor web em paralelo sem bloquear operações críticas.
-* **Visual Status Indicator:** Utiliza o LED RGB onboard para feedback visual imediato sobre o status do sistema (Verde para Online, Vermelho para Offline/Falha, Roxo para modo de configuração).
-* **Modular C++ Design:** Cada funcionalidade principal é encapsulada em sua própria classe para melhor organização, manutenibilidade e escalabilidade.
+* **Multi-Tasking RTOS:** Built on FreeRTOS to handle network diagnostics, device discovery, traffic analysis, and the web server in parallel without blocking critical operations.
+* **Visual Status Indicator:** Utilizes the onboard RGB LED for immediate visual feedback on the system's status (Green for Online, Red for Offline/Failure, Purple for provisioning mode).
+* **Modular C++ Design:** Each core functionality is encapsulated in its own class for better organization, maintainability, and scalability.
 
 ---
 
 ### Project Modules
 
-#### Módulo 1: Resiliência Autônoma
-* `Status:` ✅ **Implementado**
-* **Recuperação Inteligente:** Tenta reiniciar o roteador através de um comando de software TR-064 para uma recuperação rápida e elegante.
-* **Fallback Físico:** Usa um relé para cortar e restaurar a energia do roteador como Plano B, garantindo a recuperação mesmo que o software do roteador não responda.
-* **Implementação Atual:** Uma máquina de estados robusta gerencia o status do sistema. Quando uma queda de internet é confirmada, ela segue um protocolo de reinicializações com tempo progressivo (intervalos de 2 min, 30 min e 2 horas).
+#### Module 1: Autonomous Resilience
+* `Status:` ✅ **Implemented**
+* **Intelligent Recovery:** Attempts to reboot the router via a TR-064 software command for a fast and elegant recovery.
+* **Physical Fallback:** Uses a relay to power-cycle the router as a Plan B, ensuring recovery even if the router's software is unresponsive.
+* **Current Implementation:** A robust state machine manages the system's status. When an internet outage is confirmed, it follows a progressive timed backoff for reboot attempts (2-min, 30-min, and 2-hour intervals).
 
-#### Módulo 2: Diagnóstico em Múltiplas Camadas
-* `Status:` ✅ **Implementado**
-* **Análise Precisa de Falhas:** Verifica a conectividade através de múltiplos pontos críticos.
-* **Tomada de Decisão Informada:** Evita reinicializações desnecessárias, identificando de forma confiável uma verdadeira queda de internet.
-* **Implementação Atual:** Uma verificação resiliente em duas etapas é realizada. Primeiro, tenta uma requisição leve via HTTP GET. Apenas se isso falhar, inicia uma rajada de pings ICMP para um servidor confiável (`8.8.8.8`). Todas as chamadas de Ping no projeto são protegidas por um mutex para garantir a estabilidade.
+#### Module 2: Multi-Layered Diagnostics
+* `Status:` ✅ **Implemented**
+* **Accurate Fault Analysis:** Verifies connectivity through multiple critical points.
+* **Informed Decision-Making:** Avoids unnecessary reboots by reliably identifying a true internet outage.
+* **Current Implementation:** A resilient two-stage check is performed. It first attempts a lightweight HTTP GET request. Only if that fails, it initiates a burst of ICMP pings to a reliable server (`8.8.8.8`). All Ping calls throughout the project are protected by a mutex to ensure stability.
 
-#### Módulo 3: Visibilidade e Descoberta de Rede
-* `Status:` ✅ **Implementado**
-* **Mapeamento Ativo da Rede:** Varre a sub-rede para criar um inventário em tempo real de todos os dispositivos conectados.
-* **Implementação Atual:** Para garantir a máxima estabilidade do sistema, a varredura de rede foi refatorada de um modelo paralelo para um **scan sequencial**. A tarefa principal executa um ping ICMP para cada IP na sub-rede de forma bloqueante, mas com pequenos delays para não travar o sistema. Isso elimina a complexidade e os riscos de instabilidade associados à criação de múltiplas tarefas de rede.
+#### Module 3: Network Visibility & Discovery
+* `Status:` ✅ **Implemented**
+* **Active Network Mapping:** Scans the subnet to create a real-time inventory of all connected devices.
+* **Current Implementation:** To ensure maximum system stability, the network scan was refactored from a parallel to a **sequential scan** model. The main task performs a blocking ICMP ping sweep for each IP on the subnet, with small delays to avoid system lock-ups. This eliminates the complexity and instability risks associated with creating multiple network tasks.
 
-#### Módulo 4: Análise de Tráfego e Segurança (Modo Promíscuo)
-* `Status:` ✅ **Implementado**
-* **Monitoramento de Baixo Nível:** Captura pacotes Wi-Fi para monitorar a saúde da rede.
-* **Captura de DNS:** Filtra e decodifica especificamente as consultas DNS (porta UDP 53), registrando qual dispositivo (por endereço MAC) está tentando acessar qual domínio.
-* **Implementação Atual:** O sistema entra periodicamente em modo Sniffer (promíscuo). A tarefa de captura foi otimizada para ser extremamente leve, evitando a sobrecarga do sistema. Ela usa um filtro de hardware (`WIFI_PROMIS_FILTER_MASK_DATA`) para receber apenas pacotes de dados e possui um mecanismo de **encerramento gracioso** para evitar corrupção de memória ao alternar os modos do Wi-Fi.
+#### Module 4: Traffic Analysis & Security (Promiscuous Mode)
+* `Status:` ✅ **Implemented**
+* **Low-Level Monitoring:** Captures Wi-Fi packets to monitor network health.
+* **DNS Query Sniffing:** Filters and decodes specifically DNS queries (UDP port 53), logging which device (by MAC address) is requesting which domain.
+* **Current Implementation:** The system periodically enters Sniffer (promiscuous) mode. The capture task is highly optimized to be lightweight, preventing system overload. It uses a hardware filter (`WIFI_PROMIS_FILTER_MASK_DATA`) to receive only data packets and features a **graceful shutdown** mechanism to prevent memory corruption when switching Wi-Fi modes.
 
-#### Módulo 5: Interface de Controle Remoto (Web Server + API)
-* `Status:` ✅ **Implementado**
-* **Dashboard Centralizado:** Hospeda uma interface web para visualização de status em tempo real e controle sob demanda.
-* **Portal de Provisionamento:** Ao ser ligado pela primeira vez, cria um Ponto de Acesso (AP) com um portal cativo para configurar as credenciais do Wi-Fi, roteador e Telegram de forma fácil.
-* **Implementação Atual:** Um servidor web assíncrono fornece um dashboard que exibe o status da internet e a lista de dispositivos na rede (via API JSON `/status_json`). Também permite forçar uma reinicialização do roteador através de um botão na interface (via endpoint `/reboot`).
+#### Module 5: Remote Control Interface (Web Server + API)
+* `Status:` ✅ **Implemented**
+* **Centralized Dashboard:** Hosts a web interface for real-time status display and on-demand control.
+* **Provisioning Portal:** On first boot, it creates an Access Point (AP) with a captive portal for easy configuration of Wi-Fi, router, and Telegram credentials.
+* **Current Implementation:** An asynchronous web server provides a dashboard that displays internet status and the list of network devices (via a `/status_json` API). It also allows forcing a router reboot via a button on the interface (via the `/reboot` endpoint).
 
-#### Módulo 6: Gateway de Notificação Inteligente
-* `Status:` ✅ **Implementado**
-* **Comunicação Proativa:** Envia alertas críticos e informativos para serviços de mensagens instantâneas.
-* **Alertas Contextuais:** Notifica sobre o início do sistema, quedas de internet e recuperação do serviço.
-* **Implementação Atual:** O sistema é totalmente integrado com o Telegram. Ele envia mensagens formatadas em Markdown para eventos chave, como "Super Monitor started", "Internet Outage Detected!", e "Internet Recovered!".
-
----
-
-### Melhorias de Lógica e Estabilidade Implementadas
-
-Durante o desenvolvimento e depuração, várias melhorias arquiteturais foram feitas para garantir a robustez do sistema:
-
-* **✅ Encerramento Gracioso de Tarefas:** A `snifferTask` agora é encerrada através de uma flag de controle (`volatile bool`), permitindo que ela finalize suas operações e se auto-delete de forma segura. Isso eliminou uma causa crítica de **corrupção de memória (Heap Corruption)**.
-
-* **✅ Proteção de Recursos Compartilhados (Mutex):** Foi implementado um mutex para a biblioteca `ESP32Ping`. Isso garante que diferentes tarefas (`NetworkDiscovery` e `NetworkDiagnostics`) possam usar a função de ping sem causar **condições de corrida (race conditions)**, que levavam a travamentos.
-
-* **✅ Transições de Modo Wi-Fi Robustas:** A tarefa principal (`operationalTask`) foi reestruturada. Notavelmente, uma pausa estratégica foi adicionada após a reconexão do Wi-Fi (ao sair do modo Sniffer), dando tempo para a pilha de rede do ESP32 se estabilizar completamente.
-
-* **✅ Aumento de Memória de Pilha (Stack):** O stack da `operationalTask` foi aumentado para 16KB para garantir uma operação robusta e prevenir qualquer `Stack Overflow`.
+#### Module 6: Intelligent Notification Gateway
+* `Status:` ✅ **Implemented**
+* **Proactive Communication:** Sends critical and informative alerts to instant messaging services.
+* **Contextual Alerts:** Notifies on system startup, internet outages, and service recovery.
+* **Current Implementation:** The system is fully integrated with Telegram. It sends formatted Markdown messages for key events, such as "Super Monitor started," "Internet Outage Detected!", and "Internet Recovered!".
 
 ---
 
-### O que Falta e Ideias com TinyML (Trabalho Futuro)
+### Key Logic & Stability Improvements Implemented
 
-#### Módulos Planejados:
-* **Módulo 7: Gerenciamento Ativo de Qualidade de Serviço (QoS):** Monitorar o consumo de banda e, via comandos TR-064, priorizar ou limitar dinamicamente o tráfego de dispositivos específicos.
-* **Módulo 8: Log Persistente e Análise Histórica:** Armazenar logs de eventos importantes (quedas, reinicializações, picos de latência) em um cartão MicroSD para análise de estabilidade a longo prazo.
+During development and debugging, several architectural improvements were made to ensure system robustness:
 
-#### Módulos Futuros com Inteligência Artificial (TinyML):
-* **🤖 Módulo 9: Detecção de Anomalias na Rede:**
-    * **Lógica:** Coletar métricas da rede (pacotes/seg, latência, número de dispositivos) para treinar um modelo de "normalidade" (ex: Autoencoder). O modelo rodaria no ESP32 e, se o tráfego atual desviasse muito do padrão normal aprendido, um alerta de "comportamento anômalo" seria gerado.
-    * **Benefício:** Detectar problemas antes que se tornem críticos, como um dispositivo IoT infectado gerando tráfego excessivo.
+* **✅ Graceful Task Shutdown:** The `snifferTask` is now terminated via a control flag (`volatile bool`), allowing it to finish its operations and self-delete safely. This eliminated a critical cause of **Heap Corruption**.
 
-* **🔮 Módulo 10: Análise Preditiva de Falhas:**
-    * **Lógica:** Usar um modelo de série temporal (ex: RNN, LSTM) treinado com dados de latência, jitter e perda de pacotes. O modelo aprenderia a reconhecer os padrões que normalmente precedem uma queda de internet.
-    * **Benefício:** Enviar uma notificação de **alerta preditivo**, como "Atenção: Conexão instável detectada. Possível queda nos próximos minutos", permitindo uma ação proativa.
+* **✅ Shared Resource Protection (Mutex):** A mutex was implemented for the `ESP32Ping` library. This ensures that different tasks (`NetworkDiscovery` and `NetworkDiagnostics`) can use the ping function without causing **race conditions**, which led to crashes.
 
-* **🛡️ Módulo 11: Impressão Digital e Segurança de Dispositivos (Device Fingerprinting):**
-    * **Lógica:** Analisar as características do tráfego de um novo dispositivo que se conecta à rede (protocolos, tamanhos de pacote, servidores de destino). Um modelo de classificação (ex: Decision Tree, SVM) poderia identificar o tipo de dispositivo (celular, laptop, câmera de segurança).
-    * **Benefício:** Aumentar a segurança, enviando um alerta como "Alerta de Segurança: Um novo dispositivo não identificado (possivelmente uma câmera) conectou-se à rede".
+* **✅ Robust Wi-Fi State Transitions:** The main `operationalTask` was restructured. Notably, a strategic pause was added after reconnecting to Wi-Fi (when exiting Sniffer mode), giving the ESP32's network stack time to stabilize completely.
+
+* **✅ Increased Stack Memory:** The stack for the main `operationalTask` was increased to 16KB to ensure robust operation and prevent any `Stack Overflows`.
+
+---
+
+### Future Work & TinyML Ideas
+
+#### Planned Modules:
+* **Module 7: Active Quality of Service (QoS) Management:** Monitor bandwidth consumption and, via TR-064 commands, dynamically prioritize or limit traffic for specific devices.
+* **Module 8: Persistent Logging & Historical Analysis:** Store logs of important events (outages, reboots, latency spikes) to an SD card for long-term stability analysis.
+
+#### Future Modules with Artificial Intelligence (TinyML):
+* **🤖 Module 9: Network Anomaly Detection:**
+    * **Logic:** Collect network metrics (packets/sec, latency, device count) to train a "normality" model (e.g., an Autoencoder). The model would run on the ESP32, and if the current traffic deviates significantly from the learned normal pattern, an "anomalous behavior" alert would be generated.
+    * **Benefit:** Detect issues before they become critical, such as a compromised IoT device generating excessive traffic.
+
+* **🔮 Module 10: Predictive Failure Analysis:**
+    * **Logic:** Use a time-series model (e.g., RNN, LSTM) trained on latency, jitter, and packet loss data. The model would learn to recognize the patterns that typically precede an internet outage.
+    * **Benefit:** Send a **predictive warning notification**, such as "Warning: Unstable connection detected. A possible outage may occur in the next few minutes," allowing for proactive action.
+
+* **🛡️ Module 11: Device Fingerprinting & Security:**
+    * **Logic:** Analyze the traffic characteristics of a new device connecting to the network (protocols, packet sizes, destination servers). A classification model (e.g., Decision Tree, SVM) could identify the device type (phone, laptop, security camera).
+    * **Benefit:** Enhance security by sending an alert like "Security Alert: A new, unidentified device (possibly a camera) has connected to the network."
