@@ -10,6 +10,9 @@
 #include <Adafruit_NeoPixel.h>
 #include "esp_log.h"
 #include <Preferences.h>
+#include "TinyUPnP.h"
+#include "AnomalyDetector.h" 
+
 extern "C"
 {
 #include "lwip/dns.h"
@@ -38,8 +41,8 @@ const int ROUTER_RELAY_PIN = 18;
 #define NUM_LEDS 1
 #define BOOT_BUTTON_PIN 0
 Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-#define COLOR_GREEN pixels.Color(255, 0, 0)
-#define COLOR_RED pixels.Color(0, 255, 0)
+#define COLOR_RED pixels.Color(255, 0, 0)
+#define COLOR_GREEN pixels.Color(0, 255, 0)
 #define COLOR_PURPLE pixels.Color(128, 0, 128)
 
 String saved_ssid;
@@ -52,6 +55,8 @@ NetworkDiscovery networkDiscovery;
 TrafficAnalyzer trafficAnalyzer;
 WebServerManager webServerManager;
 Preferences preferences;
+TinyUPnP upnp(5000); 
+AnomalyDetector anomalyDetector;
 
 // ===================================================================
 // --- MUDANÇA 1: NOVA LÓGICA DE CONTROLE DO LED ---
@@ -103,6 +108,10 @@ void operationalTask(void *pvParameters)
   const long internetCheckInterval = 60 * 1000;     // 1 minuto
   const long discoveryScanInterval = 4 * 60 * 1000; // 5 minutos
 
+  // --- diciona um timer para a descoberta UPnP ---
+  unsigned long lastUpnpDiscovery = 0;
+  const long upnpDiscoveryInterval = 10 * 60 * 1000; // A cada 10 minutos
+
   notificationManager.sendMessage("✅ *Super Monitor* iniciou operação normal.");
 
   for (;;)
@@ -134,6 +143,31 @@ void operationalTask(void *pvParameters)
                 networkDiscovery.beginScan();
                 lastDiscoveryScan = currentTime;
             }
+
+            // --- Adiciona a lógica de descoberta UPnP periódica ---
+            if (currentTime - lastUpnpDiscovery >= upnpDiscoveryInterval) {
+                ESP_LOGI(TAG, "Iniciando descoberta de dispositivos UPnP...");
+                
+                // Esta é a chamada correta: ela bloqueia e retorna a lista
+                ssdpDeviceNode* deviceList = upnp.listSsdpDevices();
+
+                ESP_LOGI(TAG, "------ Dispositivos UPnP Encontrados ------");
+                // A biblioteca oferece uma função para imprimir a lista
+                upnp.printSsdpDevices(deviceList);
+                ESP_LOGI(TAG, "------------------------------------------");
+                
+                // IMPORTANTE: A biblioteca não libera a memória, temos que fazer isso manualmente
+                // para evitar vazamento de memória (memory leak).
+                ssdpDeviceNode *curr = deviceList;
+                while (curr != NULL) {
+                    ssdpDeviceNode *next = curr->next;
+                    delete curr->ssdpDevice;
+                    delete curr;
+                    curr = next;
+                }
+
+                lastUpnpDiscovery = currentTime;
+            }
         }
         else
         {
@@ -164,6 +198,17 @@ void operationalTask(void *pvParameters)
         {
             ESP_LOGI(TAG, "MUDANDO PARA MODO MONITOR.");
             trafficAnalyzer.stop();
+            // --- ADICIONADO: Lógica de Detecção de Anomalia ---
+            ESP_LOGI(TAG, "Executando análise de tráfego com TinyML...");
+            bool isAnomaly = anomalyDetector.detect(
+                trafficAnalyzer._total_packets_in_window, 
+                trafficAnalyzer._total_bytes_in_window
+            );
+            if (isAnomaly) {
+                notificationManager.sendMessage("🚨 *ALERTA:* Anomalia de tráfego de rede detectada!");
+            }
+            // -----------------------------------------------------------
+
             notificationManager.sendMessage("📡 Voltando ao modo de monitoramento...");
             
             ESP_LOGI(TAG, "Reconectando ao Wi-Fi...");
@@ -263,6 +308,7 @@ void setup()
     trafficAnalyzer.setup();
     webServerManager.setup();
     networkDiagnostics.setDiscoveryModule(&networkDiscovery);
+    anomalyDetector.setup();
 
     WiFi.setAutoReconnect(true);
     WiFi.begin(saved_ssid.c_str(), saved_pass.c_str()); 
@@ -281,7 +327,7 @@ void setup()
       ESP_LOGI(TAG, "Wi-Fi Conectado!");
 
       // Atualiza o LED para verde, pois estamos online no modo monitor
-      updateLedColor(MODE_MONITOR, true); // --- MUDANÇA AQUI ---
+      updateLedColor(MODE_MONITOR, true); //
 
       IPAddress primaryDNS(8, 8, 8, 8);
       IPAddress secondaryDNS(1, 1, 1, 1);

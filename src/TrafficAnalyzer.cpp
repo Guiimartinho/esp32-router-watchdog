@@ -7,28 +7,33 @@
 static const char* TAG_TA = "TrafficAnalyzer";
 static QueueHandle_t packetQueue_s = NULL;
 
-// ===================================================================
-// --- NOVA FUNÇÃO DE DEPURAÇÃO ---
-// Esta função imprime o conteúdo de um pacote em formato hexadecimal.
-// ===================================================================
-void print_packet_hex_dump(uint8_t* data, int len) {
-    // Limita a quantidade de bytes impressos para não inundar o log
-    int len_to_print = (len < 96) ? len : 96; 
-    
-    for (int i = 0; i < len_to_print; i++) {
-        // Imprime o byte em formato hexadecimal com 2 dígitos (ex: 0F, A4)
-        printf("%02X ", data[i]);
-        // Quebra a linha a cada 16 bytes para melhor visualização
-        if ((i + 1) % 16 == 0) {
-            printf("\n");
+// Estrutura para estatísticas por dispositivo
+struct DeviceStats {
+  uint64_t packetCount = 0;
+  uint64_t totalBytes = 0;
+};
+static std::map<String, DeviceStats> statsMap;
+
+// Função para extrair a query de um pacote DNS
+String parseDnsQuery(uint8_t* data, int len) {
+    if (len < 13) return "";
+    char* query = (char*)(data + 12);
+    char* q_end = (char*)(data + len);
+    String qname = "";
+    while (query < q_end && *query != 0) {
+        uint8_t label_len = *query++;
+        if (label_len == 0 || query + label_len > q_end) break;
+        for (int i = 0; i < label_len; i++) {
+            qname += (char)query[i];
         }
+        query += label_len;
+        if (*query != 0) qname += ".";
     }
-    printf("\n"); // Linha extra no final
+    return qname;
 }
 
-// O callback permanece o mesmo, apenas captura e envia para a fila
+// Callback do sniffer: apenas captura o pacote e envia para a fila
 void TrafficAnalyzer::snifferCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
-  // Ainda filtramos por pacotes de dados, pois é o que nos interessa
   if (type != WIFI_PKT_DATA) return;
   
   wifi_promiscuous_pkt_t* packet = (wifi_promiscuous_pkt_t*)buf;
@@ -40,52 +45,100 @@ void TrafficAnalyzer::snifferCallback(void* buf, wifi_promiscuous_pkt_type_t typ
   xQueueSendToBack(packetQueue_s, &info, (TickType_t)0);
 }
 
-// ===================================================================
-// --- TAREFA MODIFICADA PARA DEPURAÇÃO ---
-// Agora ela apenas imprime o "dump" hexadecimal de cada pacote recebido.
-// ===================================================================
+// Tarefa principal do sniffer: processa a fila, coleta estatísticas e procura por DNS
 void snifferTask(void* pvParameters) {
-  ESP_LOGI(TAG_TA, "Tarefa de Análise de Tráfego iniciada. (MODO DE DEPURAÇÃO HEX DUMP)");
+  ESP_LOGI(TAG_TA, "Tarefa de Análise de Tráfego (Produção) iniciada.");
   TrafficAnalyzer* analyzer = (TrafficAnalyzer*)pvParameters;
+  unsigned long lastStatsPrint = 0;
 
   while (!analyzer->_stopSniffer) {
     CapturedPacketInfo receivedPacket;
     if (xQueueReceive(analyzer->_packetQueue, &receivedPacket, pdMS_TO_TICKS(1000))) {
-      // Imprime um cabeçalho para cada pacote
-      ESP_LOGI(TAG_TA, "--- Pacote Recebido (len: %d) ---", receivedPacket.length);
-      
-      // Chama a função para imprimir o conteúdo hexadecimal
-      print_packet_hex_dump(receivedPacket.payload, receivedPacket.length);
+      // Coleta estatísticas de todos os pacotes recebidos
+      char macStr[18];
+      uint8_t* mac_source_ptr = receivedPacket.payload + 10;
+      sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+              mac_source_ptr[0], mac_source_ptr[1], mac_source_ptr[2],
+              mac_source_ptr[3], mac_source_ptr[4], mac_source_ptr[5]);
+      statsMap[String(macStr)].packetCount++;
+      statsMap[String(macStr)].totalBytes += receivedPacket.length;
+
+      // Análise focada em pacotes DNS
+      const int IP_HEADER_OFFSET = 32;
+      if (receivedPacket.length > IP_HEADER_OFFSET && receivedPacket.payload[IP_HEADER_OFFSET - 2] == 0x08 && receivedPacket.payload[IP_HEADER_OFFSET - 1] == 0x00) {
+          uint8_t ip_protocol = receivedPacket.payload[IP_HEADER_OFFSET + 9];
+          if (ip_protocol == 17) { // UDP
+              const int UDP_HEADER_OFFSET = IP_HEADER_OFFSET + 20;
+              if (receivedPacket.length > UDP_HEADER_OFFSET + 2) {
+                  uint16_t dest_port = (receivedPacket.payload[UDP_HEADER_OFFSET] << 8) | receivedPacket.payload[UDP_HEADER_OFFSET + 1];
+                  if (dest_port == 53) { // DNS
+                      const int DNS_PAYLOAD_OFFSET = UDP_HEADER_OFFSET + 8;
+                      String dns_query = parseDnsQuery(receivedPacket.payload + DNS_PAYLOAD_OFFSET, receivedPacket.length - DNS_PAYLOAD_OFFSET);
+                      if (dns_query.length() > 0) {
+                          ESP_LOGW(TAG_TA, "DNS Query from MAC %s -> %s", macStr, dns_query.c_str());
+                      }
+                  }
+              }
+          }
+      }
     }
-    // A lógica de estatísticas e decodificação DNS foi removida temporariamente para limpar o log.
-    vTaskDelay(pdMS_TO_TICKS(1));
+
+    // A cada 30 segundos, imprime as estatísticas e calcula os totais para a IA
+    if (millis() - lastStatsPrint > 30000) {
+      lastStatsPrint = millis();
+      ESP_LOGI(TAG_TA, "--- Estatísticas de Tráfego (últimos 30s) ---");
+      
+      uint32_t current_total_packets = 0;
+      uint64_t current_total_bytes = 0;
+
+      for(auto const& [mac, stats] : statsMap) {
+        ESP_LOGD(TAG_TA, "MAC: %s - Pacotes: %llu, Bytes: %llu", mac.c_str(), stats.packetCount, stats.totalBytes);
+        current_total_packets += stats.packetCount;
+        current_total_bytes += stats.totalBytes;
+      }
+
+      // Guarda os totais para serem usados pelo AnomalyDetector
+      analyzer->_total_packets_in_window += current_total_packets;
+      analyzer->_total_bytes_in_window += current_total_bytes;
+      
+      statsMap.clear();
+    }
   }
 
+  // Encerramento seguro da tarefa
   ESP_LOGI(TAG_TA, "Tarefa de Análise de Tráfego encerrando graciosamente.");
   analyzer->_snifferTaskHandle = NULL;
   vTaskDelete(NULL);
 }
 
-// O construtor, setup, start e stop permanecem os mesmos da versão correta anterior
+// Construtor
 TrafficAnalyzer::TrafficAnalyzer() {
   _packetQueue = NULL;
   _snifferTaskHandle = NULL;
   _stopSniffer = false;
+  _total_packets_in_window = 0;
+  _total_bytes_in_window = 0;
 }
 
+// Setup
 void TrafficAnalyzer::setup() {
   _packetQueue = xQueueCreate(100, sizeof(CapturedPacketInfo));
   packetQueue_s = _packetQueue;
   ESP_LOGI(TAG_TA, "Módulo de Análise de Tráfego inicializado.");
 }
 
+// Inicia o modo Sniffer
 void TrafficAnalyzer::start() {
   if (WiFi.status() != WL_CONNECTED) {
     ESP_LOGE(TAG_TA, "Nao e possivel iniciar o modo promiscuo. Wi-Fi desconectado.");
     return;
   }
   if (_snifferTaskHandle != NULL) return;
+  
   _stopSniffer = false;
+  // Zera os contadores no início de cada ciclo
+  _total_packets_in_window = 0;
+  _total_bytes_in_window = 0;
 
   ESP_LOGI(TAG_TA, "Preparando para modo promíscuo...");
   _target_channel = WiFi.channel();
@@ -109,12 +162,14 @@ void TrafficAnalyzer::start() {
   xTaskCreatePinnedToCore(snifferTask, "Sniffer Task", 8192, this, 2, &_snifferTaskHandle, 0);
 }
 
+// Para o modo Sniffer
 void TrafficAnalyzer::stop() {
   if (_snifferTaskHandle != NULL) {
     _stopSniffer = true;
+    // Aguarda um pouco para a tarefa terminar e processar os últimos pacotes
     vTaskDelay(pdMS_TO_TICKS(1100)); 
   }
   esp_wifi_set_promiscuous(false);
-  // statsMap foi removido temporariamente da lógica de depuração
+  statsMap.clear(); // Garante que o mapa seja limpo
   ESP_LOGI(TAG_TA, "Modo promíscuo parado.");
 }

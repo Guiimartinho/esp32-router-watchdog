@@ -21,6 +21,9 @@ public:
   void start();
   void stop();
 
+  uint32_t _total_packets_in_window;
+  uint64_t _total_bytes_in_window;
+
 private:
   QueueHandle_t _packetQueue;
   TaskHandle_t _snifferTaskHandle;
